@@ -1,41 +1,53 @@
 // Ethernet Time Synchronization
-module broadsync_top (
-    input  wire        ptp_clk,
-    input  wire        ptp_reset,
+module broadsync_top #(
+    parameter BITCLK_TIMEOUT = 100*1024,
+    parameter M_TIMEOUT_WIDTH = 8,
+    parameter S_TIMEOUT_WIDTH = 64,
+    parameter FRAC_NS_WIDTH = 30,
+    parameter NS_WIDTH = 30,
+    parameter S_WIDTH = 48
+) (
+    input  wire                        ptp_clk,
+    input  wire                        ptp_reset,
 
-    input  wire        bitclock_in,
-    input  wire        heartbeat_in,
-    input  wire        timecode_in,
+    input  wire                        bitclock_in,
+    input  wire                        heartbeat_in,
+    input  wire                        timecode_in,
 
-    output wire        bitclock_out,
-    output wire        heartbeat_out,
-    output wire        timecode_out,
+    output wire                        bitclock_out,
+    output wire                        heartbeat_out,
+    output wire                        timecode_out,
 
-    input  wire        frame_en,
-    output wire        frame_done,
-    input  wire        lock_value_in,
-    input  wire [7:0]  clk_accuracy_in,
-    output wire        lock_value_out,
-    output wire [79:0] time_value_out,
-    output wire [7:0]  clk_accuracy_out,
-    output wire        frame_error,
+    input  wire                        frame_en,
+    output wire                        frame_done,
+    input  wire                        lock_value_in,
+    input  wire [7:0]                  clk_accuracy_in,
+    output wire                        lock_value_out,
+    output wire [S_WIDTH+NS_WIDTH+1:0] time_value_out,
+    output wire [7:0]                  clk_accuracy_out,
+    output wire                        frame_error,
 
 
-    input  wire [29:0] toggle_time_fractional_ns,
-    input  wire [29:0] toggle_time_nanosecond,
-    input  wire [47:0] toggle_time_seconds,
-    input  wire [29:0] half_period_fractional_ns,
-    input  wire [29:0] half_period_nanosecond,
-    input  wire [30:0] drift_rate,
-    input  wire [78:0] time_offset
+    input  wire [FRAC_NS_WIDTH-1:0]    toggle_time_fractional_ns,
+    input  wire [NS_WIDTH-1:0]         toggle_time_nanosecond,
+    input  wire [S_WIDTH-1:0]          toggle_time_seconds,
+    input  wire [FRAC_NS_WIDTH-1:0]    half_period_fractional_ns,
+    input  wire [NS_WIDTH-1:0]         half_period_nanosecond,
+    input  wire [FRAC_NS_WIDTH-0:0]    drift_rate,
+    input  wire [S_WIDTH+NS_WIDTH-0:0] time_offset
 );
 
 wire gtm_clk;
 wire gtm_clk_en;
 
-wire [79:0] sync_time;
+wire [S_WIDTH+NS_WIDTH+1:0] sync_time;
 
-broadsync_master broadsync_master (
+broadsync_master #(
+    .TIMEOUT_WIDTH(M_TIMEOUT_WIDTH),
+    .FRAC_NS_WIDTH(FRAC_NS_WIDTH),
+    .NS_WIDTH(NS_WIDTH),
+    .S_WIDTH(S_WIDTH)
+) broadsync_master (
     .ptp_clk(ptp_clk),
     .ptp_reset(ptp_reset),
 
@@ -52,7 +64,13 @@ broadsync_master broadsync_master (
     .timecode_out(timecode_out)
 );
 
-broadsync_slave broadsync_slave (
+broadsync_slave #(
+    .BITCLK_TIMEOUT(BITCLK_TIMEOUT),
+    .TIMEOUT_WIDTH(S_TIMEOUT_WIDTH),
+    .FRAC_NS_WIDTH(FRAC_NS_WIDTH),
+    .NS_WIDTH(NS_WIDTH),
+    .S_WIDTH(S_WIDTH)
+) broadsync_slave (
     .ptp_clk(ptp_clk),
     .ptp_reset(ptp_reset),
 
@@ -66,7 +84,11 @@ broadsync_slave broadsync_slave (
     .timecode_in(timecode_in)
 );
 
-broadsync_gtm broadsync_gtm (
+broadsync_gtm #(
+    .FRAC_NS_WIDTH(FRAC_NS_WIDTH),
+    .NS_WIDTH(NS_WIDTH),
+    .S_WIDTH(S_WIDTH)
+) broadsync_gtm (
     .ptp_clk(ptp_clk),
     .ptp_reset(ptp_reset),
 
@@ -85,41 +107,48 @@ broadsync_gtm broadsync_gtm (
 
 endmodule
 
-module broadsync_gtm (
-    input  wire        ptp_clk,
-    input  wire        ptp_reset,
+module broadsync_gtm #( 
+    parameter FRAC_NS_WIDTH = 30,
+    parameter NS_WIDTH = 30,
+    parameter S_WIDTH = 48
+) (
+    input  wire                        ptp_clk,
+    input  wire                        ptp_reset,
 
-    input  wire [29:0] toggle_time_fractional_ns,
-    input  wire [29:0] toggle_time_nanosecond,
-    input  wire [47:0] toggle_time_seconds,
-    input  wire [29:0] half_period_fractional_ns,
-    input  wire [29:0] half_period_nanosecond,
-    input  wire [30:0] drift_rate,
-    input  wire [78:0] time_offset,
+    input  wire [FRAC_NS_WIDTH-1:0]    toggle_time_fractional_ns,
+    input  wire [NS_WIDTH-1:0]         toggle_time_nanosecond,
+    input  wire [S_WIDTH-1:0]          toggle_time_seconds,
+    input  wire [FRAC_NS_WIDTH-1:0]    half_period_fractional_ns,
+    input  wire [NS_WIDTH-1:0]         half_period_nanosecond,
+    input  wire [FRAC_NS_WIDTH-0:0]    drift_rate,
+    input  wire [S_WIDTH+NS_WIDTH-0:0] time_offset,
 
-    output reg         gtm_clk = 1'b0,
-    output reg         gtm_clk_en = 1'b0,
-    output wire [79:0] sync_time
+    output reg                         gtm_clk = 1'b0,
+    output reg                         gtm_clk_en = 1'b0,
+    output wire [S_WIDTH+NS_WIDTH+1:0] sync_time
 );
 
+localparam FRC_WIDTH = S_WIDTH+NS_WIDTH+FRAC_NS_WIDTH;
+localparam HPC_WIDTH = NS_WIDTH+FRAC_NS_WIDTH;
+
 //  PTP-free running time-of-day counter 
-reg  [107:0] free_running_counter = 108'd0;
-reg  [108:0] free_running_counter_drift_adjusted = 109'd0;
-reg  [109:0] free_running_counter_offset_adjusted = 110'd0;
-reg  [109:0] cpu_init_toggle_time = 110'd0;
-reg  [109:0] cpu_prog_half_period = 110'd0;
-reg  [109:0] cpu_prog_half_period_r = 110'd0;
+reg  [FRC_WIDTH-1:0] free_running_counter = {FRC_WIDTH{1'b0}};
+reg  [FRC_WIDTH-0:0] free_running_counter_drift_adjusted = {FRC_WIDTH+1{1'b0}};
+reg  [FRC_WIDTH+1:0] free_running_counter_offset_adjusted = {FRC_WIDTH+2{1'b0}};
+reg  [FRC_WIDTH+1:0] cpu_init_toggle_time = {FRC_WIDTH+2{1'b0}};
+reg  [FRC_WIDTH+1:0] cpu_prog_half_period = {FRC_WIDTH+2{1'b0}};
+reg  [FRC_WIDTH+1:0] cpu_prog_half_period_r = {FRC_WIDTH+2{1'b0}};
 
-assign sync_time = free_running_counter_offset_adjusted[109:30];
+assign sync_time = free_running_counter_offset_adjusted[FRC_WIDTH+1:FRAC_NS_WIDTH];
 
-wire [107:0] toggle_time;
-wire [59:0]  half_period;
+wire [FRC_WIDTH-1:0] toggle_time;
+wire [HPC_WIDTH-1:0] half_period;
 
 assign toggle_time = {toggle_time_seconds,toggle_time_nanosecond,toggle_time_fractional_ns};
 assign half_period = {half_period_nanosecond,half_period_fractional_ns};
 
-reg signed [30:0] drift_adjustment;
-reg signed [78:0] offset_adjustment;
+reg signed [FRAC_NS_WIDTH-0:0]    drift_adjustment;
+reg signed [S_WIDTH+NS_WIDTH-0:0] offset_adjustment;
 
 always @(posedge ptp_clk) begin
     cpu_init_toggle_time <= toggle_time;
@@ -137,7 +166,7 @@ end
 
 always @(posedge ptp_clk) begin
     if (ptp_reset) begin
-        free_running_counter <= 108'd0;
+        free_running_counter <= {FRC_WIDTH{1'b0}};
     end else begin
         free_running_counter <= free_running_counter + 1;
     end
@@ -165,39 +194,49 @@ end
 
 endmodule
 
-module broadsync_slave (
-    input  wire        ptp_clk,
-    input  wire        ptp_reset,
+module broadsync_slave #(
+    parameter BITCLK_TIMEOUT = 1024,
+    parameter TIMEOUT_WIDTH = 64,
+    parameter FRAC_NS_WIDTH = 30,
+    parameter NS_WIDTH = 30,
+    parameter S_WIDTH = 48
+) (
+    input  wire                        ptp_clk,
+    input  wire                        ptp_reset,
 
-    output reg         lock_value,
-    output reg  [79:0] time_value,
-    output reg  [7:0]  clk_accuracy,
-    output reg         frame_error = 0,
+    output reg                         lock_value,
+    output reg  [S_WIDTH+NS_WIDTH+1:0] time_value,
+    output reg  [7:0]                  clk_accuracy,
+    output reg                         frame_error = 0,
 
-    input  wire        bitclock_in,
-    input  wire        heartbeat_in,
-    input  wire        timecode_in
+    input  wire                        bitclock_in,
+    input  wire                        heartbeat_in,
+    input  wire                        timecode_in
 );
 
-reg         lock = 0;
-reg  [87:0] active = 0;
-reg  [7:0]  crc = 0;
-wire [7:0]  crc_cal;
+localparam ACTIVE_WIDTH = S_WIDTH+NS_WIDTH+10;
 
-localparam START_WAIT  = 64;
-localparam ACTIVE_WAIT = 88;
+reg                     lock = 1'b0;
+reg  [ACTIVE_WIDTH-1:0] active = {ACTIVE_WIDTH{1'b0}};
+reg  [7:0]              crc = {8{1'b1}};
+wire [7:0]              crc_cal;
+
+localparam START_WAIT  = TIMEOUT_WIDTH;
+localparam ACTIVE_WAIT = ACTIVE_WIDTH;
 localparam CRC_WAIT    = 8;
-localparam DONE_WAIT   = 64;
+localparam DONE_WAIT   = TIMEOUT_WIDTH;
 
 reg [31:0] count = {32{1'b0}};
+reg [31:0] timeout = {32{1'b0}};
 
 localparam IDLE   = 0;
-localparam START  = 1;
-localparam LOCK   = 2;
-localparam ACTIVE = 3;
-localparam CRC    = 4;
-localparam DONE   = 5;
-localparam UPDATE = 6;
+localparam INIT   = 1;
+localparam START  = 2;
+localparam LOCK   = 3;
+localparam ACTIVE = 4;
+localparam CRC    = 5;
+localparam DONE   = 6;
+localparam UPDATE = 7;
 
 reg [2:0] state = IDLE;
 
@@ -223,13 +262,13 @@ end
 
 always @(posedge ptp_clk) begin
     if (state == ACTIVE && gtm_clk_en) begin
-        active <= timecode_r[3];
+        active <= {active[ACTIVE_WIDTH-2:0],timecode_r[3]};
     end
 end
 
 always @(posedge ptp_clk) begin
     if (state == CRC && gtm_clk_en) begin
-        crc <= timecode_r[3];
+        crc <= {crc[6:0],timecode_r[3]};
     end
 end
 
@@ -243,7 +282,7 @@ always @(posedge ptp_clk) begin
         if (crc == crc_cal) begin
             frame_error <= 0;
             lock_value <= lock;
-            time_value <= active[87:8];
+            time_value <= active[ACTIVE_WIDTH-1:8];
             clk_accuracy <= active[7:0];
         end else begin
             frame_error <= 1;
@@ -255,26 +294,39 @@ always @(posedge ptp_clk) begin
     if (ptp_reset) begin
         state <= IDLE;
         count <= 0;
+        timeout <= 0;
+    end if (timeout >= BITCLK_TIMEOUT-1) begin
+        timeout <= 0;
+        state <= IDLE;
+        count <= 0;
     end else if (gtm_clk_en) begin
+        timeout <= 0;
         case (state)
             IDLE : begin
                 if (heartbeat_p) begin
-                    state <= START;
+                    state <= INIT;
                 end
                 count <= 0;
             end
-            START : begin
+            INIT : begin
                 if (~heartbeat_r[3]) begin
                     state <= IDLE;
                     count <= 0;
                 end else if (~timecode_r[3] && timecode_r[2]) begin
-                    state <= LOCK;
+                    state <= START;
                     count <= 0;
                 end else if (count >= START_WAIT-1) begin
                     state <= IDLE;
                     count <= 0;
                 end else begin
                     count <= count + 1;
+                end
+            end
+            START : begin
+                if (~heartbeat_r[3]) begin
+                    state <= IDLE;
+                end else begin
+                    state <= LOCK;
                 end
             end
             LOCK : begin
@@ -329,6 +381,8 @@ always @(posedge ptp_clk) begin
                 count <= 0;
             end
         endcase
+    end else begin
+        timeout <= timeout + 1;
     end
 end
 
@@ -342,31 +396,39 @@ crc crc8_inst (
 
 endmodule
 
-module broadsync_master (
-    input  wire        ptp_clk,
-    input  wire        ptp_reset,
+module broadsync_master #(
+    parameter TIMEOUT_WIDTH = 8,
+    parameter FRAC_NS_WIDTH = 30,
+    parameter NS_WIDTH = 30,
+    parameter S_WIDTH = 48
+) (
+    input  wire                        ptp_clk,
+    input  wire                        ptp_reset,
 
-    input  wire        gtm_clk,
-    input  wire        gtm_clk_en,
-    input  wire        frame_en,
-    output reg         frame_done,
-    input  wire        lock_value,
-    input  wire [79:0] time_value,
-    input  wire [7:0]  clk_accuracy,
+    input  wire                        gtm_clk,
+    input  wire                        gtm_clk_en,
+    input  wire                        frame_en,
+    output reg                         frame_done,
+    input  wire                        lock_value,
+    input  wire [S_WIDTH+NS_WIDTH+1:0] time_value,
+    input  wire [7:0]                  clk_accuracy,
 
-    output wire        bitclock_out,
-    output reg         heartbeat_out,
-    output reg         timecode_out
+    output wire                        bitclock_out,
+    output reg                         heartbeat_out,
+    output reg                         timecode_out
 );
 
-reg         lock;
-reg  [87:0] active;
-wire [7:0]  crc;
+localparam ACTIVE_WIDTH = S_WIDTH+NS_WIDTH+10;
 
-localparam INIT_WAIT   = 8;
-localparam ACTIVE_WAIT = 88;
+reg                     lock = 1'b0;
+reg  [ACTIVE_WIDTH-1:0] active = {ACTIVE_WIDTH{1'b0}};
+wire [7:0]              crc_cal;
+reg  [7:0]              crc;
+
+localparam INIT_WAIT   = TIMEOUT_WIDTH;
+localparam ACTIVE_WAIT = ACTIVE_WIDTH;
 localparam CRC_WAIT    = 8;
-localparam DONE_WAIT   = 8;
+localparam DONE_WAIT   = TIMEOUT_WIDTH;
 
 reg [31:0] count = {32{1'b0}};
 
@@ -381,9 +443,19 @@ localparam DONE   = 6;
 reg [2:0] state = IDLE;
 
 always @(posedge ptp_clk) begin
-    if (frame_en) begin
+    if (state == IDLE && gtm_clk_en && frame_en) begin
         lock <= lock_value;
         active <= {time_value,clk_accuracy};
+    end else if (state == ACTIVE && gtm_clk_en) begin
+        active <= {active[ACTIVE_WIDTH-2:0],1'b0};
+    end
+end
+
+always @(posedge ptp_clk) begin
+    if (state == CRC && gtm_clk_en && count == 0) begin
+        crc <= {crc_cal[6:0],1'b0};
+    end else if (state == CRC && gtm_clk_en) begin
+        crc <= {crc[6:0],1'b0};
     end
 end
 
@@ -407,7 +479,13 @@ always @(posedge ptp_clk) begin
     end
 end
 
-assign bitclock_out = gtm_clk;
+reg [1:0] gtm_clk_r = 2'd0;
+
+always @(posedge ptp_clk) begin
+    gtm_clk_r <= {gtm_clk_r[0],gtm_clk};
+end
+
+assign bitclock_out = gtm_clk_r[1];
 
 always @(posedge ptp_clk) begin
     case (state)
@@ -415,8 +493,8 @@ always @(posedge ptp_clk) begin
         INIT    : timecode_out <= 1'b0;
         START   : timecode_out <= 1'b1;
         LOCK    : timecode_out <= lock;
-        ACTIVE  : timecode_out <= active[count];
-        CRC     : timecode_out <= crc[count];
+        ACTIVE  : timecode_out <= active[ACTIVE_WIDTH-1];
+        CRC     : timecode_out <= count == 0 ? crc_cal[7] : crc[7];
         DONE    : timecode_out <= 1'b0;
         default : timecode_out <= 1'b0;
     endcase
@@ -482,8 +560,8 @@ end
 
 crc crc8_inst (
     .data_in ( timecode_out    ) ,
-    .crc_en  ( state == ACTIVE ) ,
-    .crc_out ( crc             ) ,
+    .crc_en  ( state == ACTIVE && gtm_clk_en ) ,
+    .crc_out ( crc_cal         ) ,
     .rst     ( state == IDLE   ) ,
     .clk     ( ptp_clk         )
 );
