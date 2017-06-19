@@ -21,8 +21,11 @@ module cpu_if_cdc #( parameter SYNC_STAGE = 3 ) (
     output reg         l_cpu_if_access_complete = 0
 );
 
+// Read pulse sync logic
 reg l_cpu_if_read_r1 = 0;
 reg l_cpu_if_read_r2 = 0;
+reg l_cpu_if_read_valid = 0;
+
 
 always @(posedge l_clk) begin
     l_cpu_if_read_r1 <= l_cpu_if_read;
@@ -30,11 +33,19 @@ always @(posedge l_clk) begin
 end
 
 wire l_cpu_if_read_pulse = ~l_cpu_if_read_r2 && l_cpu_if_read_r1;
+wire l_cpu_if_read_pulse_valid = l_cpu_if_read_pulse & ~l_cpu_if_read_valid;
 
 pulse_sync #( .SYNC_STAGE(SYNC_STAGE) ) 
-pulse_sync_l_cpu_if_read (
+pulse_sync_l_cpu_if_read_sync (
+    .clk   ( l_clk ) ,
+    .in    ( l_cpu_if_read_pulse_valid ) ,
+    .out   ( l_cpu_if_read_sync ) 
+);
+
+pulse_sync #( .SYNC_STAGE(SYNC_STAGE) ) 
+pulse_sync_h_cpu_if_read_sync (
     .clk   ( h_clk ) ,
-    .in    ( l_cpu_if_read ) ,
+    .in    ( l_cpu_if_read_sync ) ,
     .out   ( h_cpu_if_read_sync ) 
 );
 
@@ -52,10 +63,30 @@ always @(posedge h_clk) begin
     h_cpu_if_read <= h_cpu_if_read_pulse;
 end
 
+// Write pulse sync logic
+reg l_cpu_if_write_r1 = 0;
+reg l_cpu_if_write_r2 = 0;
+reg l_cpu_if_write_valid = 0;
+
+always @(posedge l_clk) begin
+    l_cpu_if_write_r1 <= l_cpu_if_write;
+    l_cpu_if_write_r2 <= l_cpu_if_write_r1;
+end
+
+wire l_cpu_if_write_pulse = ~l_cpu_if_write_r2 && l_cpu_if_write_r1;
+wire l_cpu_if_write_pulse_valid = l_cpu_if_write_pulse & ~l_cpu_if_write_valid;
+
 pulse_sync #( .SYNC_STAGE(SYNC_STAGE) ) 
-pulse_sync_l_cpu_if_write (
+pulse_sync_l_cpu_if_write_sync (
+    .clk   ( l_clk ) ,
+    .in    ( l_cpu_if_write_pulse_valid ) ,
+    .out   ( l_cpu_if_write_sync ) 
+);
+
+pulse_sync #( .SYNC_STAGE(SYNC_STAGE) ) 
+pulse_sync_h_cpu_if_write_sync (
     .clk   ( h_clk ) ,
-    .in    ( l_cpu_if_write ) ,
+    .in    ( l_cpu_if_write_sync ) ,
     .out   ( h_cpu_if_write_sync )
 );
 
@@ -73,19 +104,39 @@ always @(posedge h_clk) begin
     h_cpu_if_write <= h_cpu_if_write_pulse;
 end
 
+wire [31:0] l_cpu_if_write_data_sync;
+
 data_sync_mux #( .DATA_WIDTH (32) )
-data_sync_mux_l_cpu_if_write_data (
+data_sync_mux_l_cpu_if_write_data_sync (
+    .clk ( l_clk ) ,
+    .sel ( l_cpu_if_write_pulse_valid ) ,
+    .in  ( l_cpu_if_write_data ) ,
+    .out ( l_cpu_if_write_data_sync )
+);
+
+data_sync_mux #( .DATA_WIDTH (32) )
+data_sync_mux_h_cpu_if_write_data (
     .clk ( h_clk ) ,
     .sel ( h_cpu_if_write_pulse ) ,
-    .in  ( l_cpu_if_write_data ) ,
+    .in  ( l_cpu_if_write_data_sync ) ,
     .out ( h_cpu_if_write_data )
 );
 
+wire [31:2] l_cpu_if_address_sync;
+
 data_sync_mux #( .DATA_WIDTH (30) )
-data_sync_mux_l_cpu_if_address (
+data_sync_mux_l_cpu_if_address_sync (
+    .clk ( l_clk ) ,
+    .sel ( l_cpu_if_write_pulse_valid | l_cpu_if_read_pulse_valid ) ,
+    .in  ( l_cpu_if_address ) ,
+    .out ( l_cpu_if_address_sync )
+);
+
+data_sync_mux #( .DATA_WIDTH (30) )
+data_sync_mux_h_cpu_if_address (
     .clk ( h_clk ) ,
     .sel ( h_cpu_if_write_pulse | h_cpu_if_read_pulse ) ,
-    .in  ( l_cpu_if_address ) ,
+    .in  ( l_cpu_if_address_sync ) ,
     .out ( h_cpu_if_address )
 );
 
@@ -107,7 +158,7 @@ end
 wire [31:0] h_cpu_if_read_data_latch;
 
 data_sync_mux #( .DATA_WIDTH (32) )
-data_sync_mux_h_cpu_if_read_data (
+data_sync_mux_h_cpu_if_read_data_latch (
     .clk ( h_clk ) ,
     .sel ( h_cpu_if_access_complete_pulse ) ,
     .in  ( h_cpu_if_read_data ) ,
@@ -115,7 +166,7 @@ data_sync_mux_h_cpu_if_read_data (
 );
 
 pulse_sync #( .SYNC_STAGE(SYNC_STAGE) ) 
-pulse_sync_h_cpu_if_access_complete_latch (
+pulse_sync_l_cpu_if_access_complete_latch (
     .clk   ( l_clk ) ,
     .in    ( h_cpu_if_access_complete_latch ) ,
     .out   ( l_cpu_if_access_complete_latch ) 
@@ -135,8 +186,7 @@ always @(posedge l_clk) begin
     l_cpu_if_access_complete <= l_cpu_if_access_complete_pulse;
 end
 
-reg l_cpu_if_read_valid = 0;
-
+// read valid in l_clk domain
 always @(posedge l_clk) begin
     if (l_reset) begin
         l_cpu_if_read_valid <= 0;
@@ -147,8 +197,19 @@ always @(posedge l_clk) begin
     end
 end
 
+// write valid in l_clk domain
+always @(posedge l_clk) begin
+    if (l_reset) begin
+        l_cpu_if_write_valid <= 0;
+    end else if (l_cpu_if_access_complete_pulse) begin
+        l_cpu_if_write_valid <= 0;
+    end else begin
+        l_cpu_if_write_valid <= l_cpu_if_write_valid ^ l_cpu_if_write_pulse;
+    end
+end
+
 data_sync_mux #( .DATA_WIDTH (32) )
-data_sync_mux_h_cpu_if_read_data_latch (
+data_sync_mux_l_cpu_if_read_data (
     .clk ( l_clk ) ,
     .sel ( l_cpu_if_access_complete_pulse & l_cpu_if_read_valid ) ,
     .in  ( h_cpu_if_read_data_latch ) ,
