@@ -141,7 +141,7 @@ module data_sync_pulsegen #(
     .dout (bqualifier)
   );
   // pulse generation for each logic transition
-  always_ff @(posedge aclk) begin
+  always_ff @(posedge bclk) begin
     bqualifier_d <= bqualifier;
   end
   assign bdout = bqualifier_d ^ bqualifier;
